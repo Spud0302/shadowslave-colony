@@ -6,6 +6,7 @@ const D = preload("res://scripts/data.gd")
 signal speed_changed(s)
 signal follow_toggled
 signal event_clicked(who)
+signal realm_toggled
 
 var w
 var clock: Label
@@ -18,6 +19,7 @@ var speed_btns = []
 var selected = null
 var last_events = -1
 var follow_btn: Button
+var realm_btn: Button
 
 const KIND_COL := {"spell": "#c9b8ff", "good": "#7fdca8", "bad": "#ff8f96", "rise": "#f2b06a", "info": "#a9adbf"}
 
@@ -68,6 +70,11 @@ func build(world) -> void:
 		b.pressed.connect(func(): speed_changed.emit(sv))
 		hb.add_child(b)
 		speed_btns.append([sv, b])
+	realm_btn = Button.new()
+	realm_btn.focus_mode = Control.FOCUS_NONE
+	realm_btn.custom_minimum_size.x = 190
+	realm_btn.pressed.connect(func(): realm_toggled.emit())
+	hb.add_child(realm_btn)
 	var sp = Control.new()
 	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(sp)
@@ -130,7 +137,7 @@ func build(world) -> void:
 	iv.add_child(follow_btn)
 	# help line
 	var help = Label.new()
-	help.text = "Drag to pan · scroll to zoom · click someone to inspect · Space pauses · 1-6 set speed · F follows"
+	help.text = "Drag to pan · scroll to zoom · click someone to inspect · Tab switches worlds · Space pauses · 1-6 set speed · F follows"
 	help.add_theme_color_override("font_color", Color(0.6, 0.6, 0.7))
 	help.add_theme_font_size_override("font_size", 12)
 	help.anchor_top = 1.0
@@ -139,6 +146,14 @@ func build(world) -> void:
 	help.offset_top = -26
 	help.offset_right = 1100
 	root.add_child(help)
+
+func set_realm(r: String) -> void:
+	if r == "dream":
+		realm_btn.text = "Dream Realm  ⇄  Tab"
+		realm_btn.add_theme_color_override("font_color", Color("#c9b8ff"))
+	else:
+		realm_btn.text = "Waking World  ⇄  Tab"
+		realm_btn.add_theme_color_override("font_color", Color("#f2d38a"))
 
 func set_speed(s: int) -> void:
 	for b in speed_btns:
@@ -162,10 +177,13 @@ func refresh() -> void:
 	stores.text = "Wood %d   Stone %d   Ashroot %d   Meals %d   Soul shards %d" % [w.store.wood, w.store.stone, w.store.raw, w.store.meal, w.store.shards]
 	var alive = 0
 	var ranks = [0, 0, 0]
+	var in_city = 0
 	for p in w.pawns:
 		if p.alive:
 			alive += 1
 			ranks[p.rank] += 1
+			if p.realm == "wake":
+				in_city += 1
 	var gstate: String
 	if w.gate_open:
 		gstate = "[color=#c9b8ff]Gateway open[/color]"
@@ -174,6 +192,12 @@ func refresh() -> void:
 	else:
 		gstate = "Sealed. %s: %d/%d" % [w.guardian.name, int(w.guardian.hp), int(w.guardian.max_hp)]
 	colony.text = "[b][color=#c9b8ff]Camp beneath %s[/color][/b]\nPeople %d   ([color=#cfcfcf]%d Sleepers[/color], [color=#f2b06a]%d Awakened[/color], [color=#ffd27a]%d Masters[/color])\nGateway: %s\nRaids survived %d · Creatures slain %d · Graves %d" % [w.citadel_name, alive, ranks[0], ranks[1], ranks[2], gstate, w.raids_survived, w.kills, w.graves.size()]
+	var wk = w.wake
+	var open_g = 0
+	for g in wk.gates:
+		if not g.closed:
+			open_g += 1
+	colony.text += "\n[b][color=#f2d38a]%s (%s)[/color][/b]\nAwake in the city %d · Bodies asleep in the ward %d\nGates closed %d · %s · Civilians lost %d" % [wk.city_name, wk.city_code, in_city, alive - in_city, wk.gates_closed, ("[color=#ff8f96]%d Gate%s open[/color]" % [open_g, "" if open_g == 1 else "s"]) if open_g > 0 else "No Gates open", wk.civ_deaths]
 	if w.events.size() != last_events:
 		last_events = w.events.size()
 		var s = "[b][color=#c9b8ff]Chronicle[/color][/b]\n"
@@ -212,7 +236,11 @@ func _inspect() -> void:
 		var pk: String = D.PERK_TEXT[p.perk()]
 		if pk != "":
 			s += "[color=#8a8fa8]%s[/color]\n" % pk
-		s += "Doing: %s\n" % ("Gone through the Gateway" if p.away_until > 0 else p.activity)
+		var where = "Dream Realm, near %s" % w.citadel_name
+		if p.realm == "wake":
+			where = "Waking World, %s" % w.wake.city_name
+		s += "[color=#8a8fa8]%s[/color]\n" % where
+		s += "Doing: %s\n" % ("Facing the Second Nightmare" if p.away_until > 0 else p.activity)
 		s += "Health   %s\n" % _bar(p.hp / p.max_hp() * 100.0)
 		s += "Hunger   %s\n" % _bar(p.hunger)
 		s += "Rest     %s\n" % _bar(p.rest)
@@ -233,4 +261,4 @@ func _inspect() -> void:
 		insp.text = s
 	else:
 		var c = o
-		insp.text = "[b][font_size=17]%s[/font_size][/b]\n[color=#ff8f96]%s[/color]%s\nHealth %d / %d\nStrike %d" % [c.name, c.rank_name, ("" if c.alive else "  (dead)"), int(max(c.hp, 0)), int(c.max_hp), int(c.dmg)] + ("\nThe Guardian of the keep. While it lives the Gateway stays sealed." if c.guardian else ("\nPart of a raid." if c.raider else "\nWanders the ash. Hunted for meat and soul shards."))
+		insp.text = "[b][font_size=17]%s[/font_size][/b]\n[color=#ff8f96]%s[/color]%s\nHealth %d / %d\nStrike %d" % [c.name, c.rank_name, ("" if c.alive else "  (dead)"), int(max(c.hp, 0)), int(c.max_hp), int(c.dmg)] + ("\nThe Guardian of the keep. While it lives the Gateway stays sealed." if c.guardian else ((("\nCame through a Gate into the streets of %s." % w.wake.city_code) if c.w != w else "\nPart of a raid.") if c.raider else "\nWanders the ash. Hunted for meat and soul shards."))

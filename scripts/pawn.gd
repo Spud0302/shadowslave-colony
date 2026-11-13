@@ -35,6 +35,17 @@ var think_t = 0
 var sleeping = false
 var hit_flash = 0
 var history: Array = []
+# the waking world
+var realm = "dream"      # "dream" or "wake"
+var wpos = Vector2()
+var wpath: Array = []
+var wjob = {}
+var wsleep = false
+var wake_since = 0
+var wake_stay = 1.0
+var dream_since = 0
+var dream_stay = 3.0
+var ward_bed = -1
 
 func setup(world, p: Vector2) -> void:
 	w = world
@@ -60,6 +71,13 @@ func color() -> Color:
 
 func tile() -> Vector2i:
 	return Vector2i(int(pos.x), int(pos.y))
+
+func wtile() -> Vector2i:
+	return Vector2i(int(wpos.x), int(wpos.y))
+
+func at() -> Vector2:
+	## Where they stand in whichever world they are in.
+	return wpos if realm == "wake" else pos
 
 func max_hp() -> float:
 	return D.RANK_HP[rank] * (1.0 + core * 0.8)
@@ -125,7 +143,8 @@ func step() -> void:
 	if trait_name == "Glutton":
 		hunger_rate *= 1.3
 	hunger = max(0.0, hunger - hunger_rate)
-	if not sleeping:
+	var asleep = sleeping or wsleep
+	if not asleep:
 		rest = max(0.0, rest - rest_rate)
 	if hunger <= 0.0 and w.tick % 60 == 0:
 		take_hit(1.5, null, "starvation")
@@ -133,7 +152,10 @@ func step() -> void:
 			return
 	# slow natural healing
 	if hp < max_hp() and w.tick % 40 == 0:
-		hp = min(max_hp(), hp + (0.6 if not sleeping else 2.0) + w.healer_bonus(self))
+		hp = min(max_hp(), hp + (0.6 if not asleep else 2.0) + w.healer_bonus(self))
+	if realm == "wake":
+		w.wake.step_pawn(self)
+		return
 	think_t -= 1
 	if think_t <= 0:
 		think_t = 20
@@ -161,7 +183,7 @@ func update_mood() -> void:
 	if trait_name == "Grim":
 		m -= 6
 	mood = lerp(mood, clamp(m, 0.0, 100.0), 0.3)
-	if mood < 16 and break_until < w.tick and w.rng.randf() < 0.08 and job.get("t", "") != "fight":
+	if mood < 16 and realm == "dream" and break_until < w.tick and w.rng.randf() < 0.08 and job.get("t", "") != "fight":
 		break_until = w.tick + 500
 		_set_job({"t": "break"})
 		w.log_event("%s's spirit breaks. They wander off, lost in despair." % name, "bad", self)
@@ -208,6 +230,9 @@ func _decide() -> void:
 		return
 	if w.gate_open and rank == 1 and core >= 0.999 and w.rng.randf() < 0.05:
 		_set_job({"t": "gateway", "kind": "nightmare"})
+		return
+	if rank >= 1 and w.gate_open and w.can_go_home(self):
+		_set_job({"t": "gateway", "kind": "home"})
 		return
 	if w.store.shards > 0 and core < 0.999 and w.shard_turn(self):
 		_set_job({"t": "absorb"})
@@ -543,7 +568,7 @@ func _assault() -> void:
 	_go(g.tile(), true)
 
 func _gateway() -> void:
-	activity = "Walking to the Gateway" if job.kind == "awaken" else "Going to face the Second Nightmare"
+	activity = {"awaken": "Walking to the Gateway", "home": "Heading for the Gateway to wake up in the city"}.get(job.kind, "Going to face the Second Nightmare")
 	var r = _go(w.gateway, false)
 	if r == 1:
 		w.enter_gateway(self, job.kind)
@@ -624,9 +649,13 @@ func take_hit(amount: float, attacker, cause := "") -> void:
 		return
 	hp -= amount
 	hit_flash = 6
-	if sleeping and attacker != null:
+	if realm == "dream" and sleeping and attacker != null:
 		sleeping = false
 		_set_job({"t": "fight", "e": attacker})
+	elif realm == "wake" and attacker != null and wjob.get("t", "") != "fight":
+		wsleep = false
+		wpath = []
+		wjob = {"t": "fight", "e": attacker}
 	if hp <= 0:
 		if perk() == "unbroken" and not used_unbroken:
 			used_unbroken = true

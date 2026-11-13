@@ -4,6 +4,7 @@ extends RefCounted
 const D = preload("res://scripts/data.gd")
 const Pawn = preload("res://scripts/pawn.gd")
 const Creature = preload("res://scripts/creature.gd")
+const Waking = preload("res://scripts/waking.gd")
 
 var rng = RandomNumberGenerator.new()
 var seed_val = 0
@@ -51,6 +52,7 @@ var arrivals = 0
 var shard_rr = 0
 var fx: Array = []        # [kind, Vector2, tick]
 var arms := 0
+var wake                  # the waking world
 
 # ---------------------------------------------------------------- generation
 func gen(s: int) -> void:
@@ -182,6 +184,10 @@ func gen(s: int) -> void:
 		_spawn_beast()
 	next_raid = int(D.TICKS_PER_DAY * 2.9)
 	tick = D.TICKS_PER_HOUR * 8
+	wake = Waking.new()
+	wake.gen(self, s)
+	for p in pawns:
+		wake.bed_for(p)
 	log_event("The winter solstice. Six Sleepers wake on the ash beneath the ruined Citadel of %s. Its Gateway is sealed, and something vast stirs in the keep." % citadel_name, "spell")
 
 func _try_slot(c: Vector2i) -> void:
@@ -207,6 +213,8 @@ func _new_pawn(p: Vector2):
 	pw.id = _nid()
 	pw.setup(self, p)
 	pawns.append(pw)
+	if wake != null:
+		wake.bed_for(pw)
 	return pw
 
 # ---------------------------------------------------------------- map queries
@@ -303,6 +311,7 @@ func step() -> void:
 		p.step()
 	for c in creatures:
 		c.step()
+	wake.step()
 	if tick % 30 == 0:
 		pawns = pawns.filter(func(p): return p.alive)
 		creatures = creatures.filter(func(c): return c.alive)
@@ -342,7 +351,7 @@ func _hourly() -> void:
 	var h = hour()
 	if not raid_active and not foreseen and tick >= next_raid - D.TICKS_PER_HOUR * 3:
 		for p in pawns:
-			if p.alive and p.perk() == "foresee" and p.away_until <= 0:
+			if p.alive and p.perk() == "foresee" and p.away_until <= 0 and p.realm == "dream":
 				foreseen = true
 				log_event("%s sees it in a dream within the dream: Nightmare Creatures are coming tonight." % p.name, "spell", p)
 				break
@@ -468,7 +477,7 @@ func _consider_assault() -> void:
 		log_event("The colony gathers its strongest. %d fighters march into the keep of %s to face the %s." % [fit, citadel_name, guardian.name], "spell")
 
 func assault_fit(p) -> bool:
-	return p.alive and p.away_until <= 0 and p.hp > p.max_hp() * 0.7 and p.mood > 25 and tick >= p.break_until
+	return p.alive and p.realm == "dream" and p.away_until <= 0 and p.hp > p.max_hp() * 0.7 and p.mood > 25 and tick >= p.break_until
 
 # ---------------------------------------------------------------- planning
 func _plan() -> void:
@@ -556,7 +565,7 @@ func finish_building(c: Vector2i, by) -> void:
 	var t: String = bp.type
 	if D.BUILD[t].solid:
 		for p in pawns:
-			if p.alive and p.tile() == c:
+			if p.alive and p.realm == "dream" and p.tile() == c:
 				# step aside before the wall goes up
 				for d in NB:
 					if walkable(c + d):
@@ -696,7 +705,7 @@ func harvest(t: String, c: Vector2i, p) -> Array:
 			feat[i] = D.F_BARE
 			var fast = false
 			for q in pawns:
-				if q.alive and q.perk() == "regrow" and q.pos.distance_to(Vector2(c)) < 15:
+				if q.alive and q.realm == "dream" and q.perk() == "regrow" and q.pos.distance_to(Vector2(c)) < 15:
 					fast = true
 			regrow[c] = [tick + int(D.TICKS_PER_DAY * (0.7 if fast else 1.6)), D.F_PLANT]
 			refresh_cell(c)
@@ -705,7 +714,7 @@ func harvest(t: String, c: Vector2i, p) -> Array:
 
 func _anyone_on(c: Vector2i) -> bool:
 	for p in pawns:
-		if p.alive and p.tile() == c:
+		if p.alive and p.realm == "dream" and p.tile() == c:
 			return true
 	return false
 
@@ -745,13 +754,13 @@ func ground_spot(p) -> Vector2i:
 func healer_bonus(p) -> float:
 	var b = 0.0
 	for q in pawns:
-		if q != p and q.alive and q.away_until <= 0 and q.perk() == "heal" and q.pos.distance_to(p.pos) < 6:
+		if q != p and q.alive and q.away_until <= 0 and q.realm == p.realm and q.perk() == "heal" and q.at().distance_to(p.at()) < 6:
 			b += 0.8 + q.skills.heal * 0.15
 	return b
 
 func rally_near(p) -> bool:
 	for q in pawns:
-		if q != p and q.alive and q.perk() == "rally" and q.pos.distance_to(p.pos) < 6:
+		if q != p and q.alive and q.realm == p.realm and q.perk() == "rally" and q.at().distance_to(p.at()) < 6:
 			return true
 	return false
 
@@ -770,7 +779,7 @@ func nearest_pawn(pos: Vector2, r: float):
 	var best = null
 	var bd = r
 	for p in pawns:
-		if p.alive and p.away_until <= 0:
+		if p.alive and p.away_until <= 0 and p.realm == "dream":
 			var d = pos.distance_to(p.pos)
 			if d < bd:
 				bd = d
@@ -826,16 +835,22 @@ func creature_died(c, killer) -> void:
 
 func pawn_died(p, killer, cause: String) -> void:
 	deaths += 1
-	graves.append([p.pos, p.name, day()])
+	if p.realm == "dream":
+		graves.append([p.pos, p.name, day()])
 	if p.job.has("target") and reserved.get(p.job.target, -1) == p.id:
 		reserved.erase(p.job.target)
 	var how = "starves" if cause == "starvation" else ("is killed by %s" % an(killer.name) if killer != null else "dies")
+	if p.realm == "wake":
+		how += " in the streets of %s" % wake.city_code
 	log_event("%s %s. %s" % [p.name, how, ("A Sleeper of the %s Aspect, %d days in the Dream Realm." if p.rank == 0 else "An Awakened of the %s Aspect.") % ([p.nature, (tick - p.arrived) / D.TICKS_PER_DAY] if p.rank == 0 else [p.nature])], "bad", p)
 	for q in pawns:
 		if q != p and q.alive:
 			q.think("%s died" % p.name, -10, 2.5)
 
 func enter_gateway(p, kind: String) -> void:
+	if kind == "awaken" or kind == "home":
+		_cross_to_waking(p, kind)
+		return
 	p.away_kind = kind
 	p.away_until = tick + int(D.TICKS_PER_DAY * (0.5 if kind == "awaken" else 1.5))
 	p.sleeping = false
@@ -844,6 +859,51 @@ func enter_gateway(p, kind: String) -> void:
 		log_event("%s steps through the Gateway and wakes in the real world." % p.name, "rise", p)
 	else:
 		log_event("%s walks into the Gateway to face the Second Nightmare alone." % p.name, "spell", p)
+
+func _cross_to_waking(p, kind: String) -> void:
+	p.cancel_job()
+	p.sleeping = false
+	p.path = []
+	if kind == "awaken":
+		p.rank = 1
+		p.core = min(p.core, 1.0) * 0.5
+		p.hp = p.max_hp()
+		awakened_total += 1
+		p.think("Awakened", 15, 4.0)
+		p.remember("Awakened with a %s Aspect and opened their eyes in %s." % [p.nature, wake.city_code])
+		log_event("%s crosses the Gateway and wakes in the Sleepers' ward of %s, Awakened with the %s Aspect." % [p.name, wake.city_code, p.nature], "rise", p)
+	else:
+		pass   # routine crossings stay out of the chronicle; the inspector shows where they are
+	wake.arrive(p)
+	p.wake_stay = rng.randf_range(0.6, 2.2)
+
+func enter_dream(p) -> void:
+	## An Awakened falls asleep in the waking world and appears beside the Citadel's Gateway.
+	p.realm = "dream"
+	p.wsleep = false
+	p.wjob = {}
+	p.wpath = []
+	p.job = {}
+	p.path = []
+	p.pos = Vector2(gateway.x + 0.5, gateway.y + 1.5)
+	p.rest = max(p.rest, 80.0)
+	p.dream_since = tick
+	p.dream_stay = rng.randf_range(2.0, 5.0)
+
+func can_go_home(p) -> bool:
+	## Awakened slip back to the waking world now and then, if the camp can spare them.
+	if p.realm != "dream" or raid_active or assault or foreseen:
+		return false
+	if tick - p.dream_since < int(D.TICKS_PER_DAY * p.dream_stay):
+		return false
+	var h = hour()
+	if h < 8.0 or h > 17.0 or p.hp < p.max_hp() * 0.6:
+		return false
+	var fighters = 0
+	for q in pawns:
+		if q != p and q.alive and q.realm == "dream" and q.away_until <= 0 and q.rank >= 1:
+			fighters += 1
+	return fighters >= 2 or (fighters >= 1 and rng.randf() < 0.05)
 
 func return_from_gateway(p) -> void:
 	var kind: String = p.away_kind

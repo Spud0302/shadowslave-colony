@@ -192,7 +192,7 @@ func _draw() -> void:
 			_creature(c, t)
 	# pawns
 	for p in w.pawns:
-		if p.alive and p.away_until <= 0:
+		if p.alive and p.away_until <= 0 and p.realm == "dream":
 			_pawn(p, t)
 	# effects
 	for f in w.fx:
@@ -202,10 +202,20 @@ func _draw() -> void:
 			draw_arc(fp, ts * (0.3 + age * 1.4), 0, TAU, 20, Color(0.75, 0.6, 1.0, 1.0 - age), 1.5)
 		else:
 			draw_circle(fp, ts * 0.3 * (1.0 - age), Color(1, 0.5, 0.3, 1.0 - age))
-	# selection
-	if selected != null and selected.alive:
-		var sp2: Vector2 = selected.pos * ts
-		draw_arc(sp2, ts * 0.9, 0, TAU, 24, Color(1, 1, 1, 0.9), 1.5)
+	_selection("dream")
+
+func _selection(realm: String) -> void:
+	if selected == null or not selected.alive:
+		return
+	var here: String
+	if selected.has_method("at"):
+		here = selected.realm
+	else:
+		here = "dream" if selected.w == w else "wake"
+	if here != realm:
+		return
+	var sp2: Vector2 = (selected.at() if selected.has_method("at") else selected.pos) * float(D.TS)
+	draw_arc(sp2, D.TS * 0.9, 0, TAU, 24, Color(1, 1, 1, 0.9), 1.5)
 
 func _piles(o: Vector2) -> void:
 	var ts = float(D.TS)
@@ -303,18 +313,19 @@ func _creature(c, t: int) -> void:
 
 func _pawn(p, t: int) -> void:
 	var ts = float(D.TS)
-	var c: Vector2 = p.pos * ts
+	var c: Vector2 = p.at() * ts
+	var wake: bool = p.realm == "wake"
 	var skin = Color8(232, 200, 170).darkened((p.id % 5) * 0.09)
 	var tunic: Color = Color8(170, 168, 160) if p.rank == 0 else p.color()
 	if p.hit_flash > 0:
 		tunic = tunic.lerp(Color(1, 0.3, 0.3), 0.6)
-	if p.sleeping:
+	if (p.wsleep if wake else p.sleeping):
 		draw_rect(Rect2(c + Vector2(-6, -2), Vector2(9, 5)), tunic)
 		draw_circle(c + Vector2(4, 0), 2.6, skin)
 		var zt = float((t / 4) % 30) / 30.0
 		draw_string(font, c + Vector2(4, -6 - zt * 6), "z", HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 1.0 - zt))
 		return
-	var moving: bool = not p.path.is_empty()
+	var moving: bool = not (p.wpath if wake else p.path).is_empty()
 	var step = sin(t * 0.5 + p.id) * (1.2 if moving else 0.0)
 	draw_circle(c + Vector2(0, 6), 4.0, Color(0, 0, 0, 0.3))
 	draw_rect(Rect2(c + Vector2(-3, 2), Vector2(2, 4 + step)), Color8(60, 54, 58))
@@ -327,10 +338,10 @@ func _pawn(p, t: int) -> void:
 	draw_rect(Rect2(c + Vector2(-3, -9), Vector2(6, 2)), hair)
 	if p.rank >= 2:
 		draw_arc(c + Vector2(0, -2), 9, 0, TAU, 20, Color(1.0, 0.8, 0.4, 0.9), 1.2)
-	if p.carry != "":
+	if p.carry != "" and not wake:
 		var cc: Color = {"wood": Color8(150, 110, 70), "stone": Color8(150, 148, 144), "raw": Color8(160, 128, 180), "meal": Color8(214, 160, 90)}.get(p.carry, Color.WHITE)
 		draw_rect(Rect2(c + Vector2(3, -2), Vector2(4, 4)), cc)
-	var jt: String = p.job.get("t", "")
+	var jt: String = p.wjob.get("t", "") if wake else p.job.get("t", "")
 	if jt in ["chop", "mine", "build"] and p.job.get("stage", 0) in [1, 2] and (jt != "build" or p.job.get("stage", 0) == 2):
 		var sw = sin(t * 0.6 + p.id) * 0.8
 		var hand = c + Vector2(4, -1)

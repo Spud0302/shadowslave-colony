@@ -5,6 +5,8 @@ const D = preload("res://scripts/data.gd")
 const World = preload("res://scripts/world.gd")
 const View = preload("res://scripts/view.gd")
 const UI = preload("res://scripts/ui.gd")
+const WakeView = preload("res://scripts/wake_view.gd")
+const WK = preload("res://scripts/waking.gd")
 
 var w
 var view
@@ -22,6 +24,10 @@ var dragging = false
 var drag_moved = false
 var drag_from = Vector2()
 var ui_t = 0.0
+var wview
+var realm = "dream"
+var cam_saved = {}
+var dark = 0.0
 const TICKS_PER_SEC := 30.0
 
 func _ready() -> void:
@@ -39,6 +45,10 @@ func _ready() -> void:
 	view = View.new()
 	add_child(view)
 	view.setup(w)
+	wview = WakeView.new()
+	add_child(wview)
+	wview.setup(w)
+	wview.set_shown(false)
 	cam = Camera2D.new()
 	add_child(cam)
 	cam.position = Vector2(w.camp) * D.TS + Vector2(0, -60)
@@ -61,11 +71,14 @@ func _ready() -> void:
 	gate_light = _light(Vector2(w.gateway) * D.TS + Vector2(8, 8), Color(0.65, 0.5, 1.0), 2.0)
 	gate_light.enabled = false
 	ui = UI.new()
+	ui.layer = 2
 	add_child(ui)
 	ui.build(w)
 	ui.speed_changed.connect(_set_speed)
 	ui.follow_toggled.connect(func(): follow = not follow)
-	ui.event_clicked.connect(func(p): _select(p); cam.position = p.pos * D.TS)
+	ui.realm_toggled.connect(func(): _set_realm("wake" if realm == "dream" else "dream"))
+	ui.event_clicked.connect(func(p): _select(p); _set_realm(p.realm); cam.position = p.at() * D.TS)
+	ui.set_realm(realm)
 	_set_speed(1)
 	for a in args:
 		if a.begins_with("--autoshot="):
@@ -78,8 +91,27 @@ func _light(p: Vector2, c: Color, s: float) -> PointLight2D:
 	l.texture_scale = s
 	l.energy = 1.0
 	l.position = p
-	add_child(l)
+	view.add_child(l)
 	return l
+
+func _set_realm(r: String) -> void:
+	if r == realm:
+		return
+	cam_saved[realm] = [cam.position, cam.zoom]
+	realm = r
+	if cam_saved.has(r):
+		cam.position = cam_saved[r][0]
+		cam.zoom = cam_saved[r][1]
+	elif r == "wake":
+		cam.position = Vector2(w.wake.academy.get_center()) * D.TS
+		cam.zoom = Vector2(1.6, 1.6)
+	view.visible = r == "dream"
+	wview.set_shown(r == "wake")
+	ui.set_realm(r)
+	_clamp_cam()
+
+func _map_px() -> Vector2:
+	return Vector2(D.W, D.H) * D.TS if realm == "dream" else Vector2(WK.W, WK.H) * D.TS
 
 func _set_speed(s: int) -> void:
 	speed = s
@@ -100,8 +132,17 @@ func _process(dt: float) -> void:
 			acc = 0.0
 	_lighting()
 	view.zoom = cam.zoom.x
+	wview.zoom = cam.zoom.x
+	wview.dark = dark
 	if follow and ui.selected != null and ui.selected.alive:
-		cam.position = cam.position.lerp(ui.selected.pos * D.TS, 0.15)
+		var sel = ui.selected
+		if sel.has_method("at"):
+			if sel.away_until <= 0 and sel.realm != realm:
+				_set_realm(sel.realm)
+				cam.position = sel.at() * D.TS
+			cam.position = cam.position.lerp(sel.at() * D.TS, 0.15)
+		else:
+			cam.position = cam.position.lerp(sel.pos * D.TS, 0.15)
 	var mv = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_up", "ui_down"))
 	if mv != Vector2.ZERO:
 		cam.position += mv * 600.0 * dt / cam.zoom.x
@@ -113,13 +154,13 @@ func _process(dt: float) -> void:
 
 func _lighting() -> void:
 	var h: float = w.hour()
-	var dark = 0.0
+	dark = 0.0
 	if h >= 19.0:
 		dark = clamp((h - 19.0) / 2.5, 0.0, 1.0)
 	elif h < 6.5:
 		dark = clamp((6.5 - h) / 1.5, 0.0, 1.0)
 	var day_c = Color(1.0, 0.97, 0.95)
-	var night_c = Color(0.22, 0.24, 0.42)
+	var night_c = Color(0.22, 0.24, 0.42) if realm == "dream" else Color(0.34, 0.36, 0.54)
 	shade.color = day_c.lerp(night_c, dark)
 	fire_light.energy = 0.25 + dark * 1.1 + sin(w.tick * 0.2) * 0.05
 	gate_light.enabled = w.gate_open
@@ -137,7 +178,7 @@ func _lighting() -> void:
 
 func _clamp_cam() -> void:
 	var half = get_viewport_rect().size / cam.zoom / 2.0
-	var mx = Vector2(D.W, D.H) * D.TS
+	var mx = _map_px()
 	cam.position.x = clamp(cam.position.x, min(half.x, mx.x / 2), max(mx.x - half.x, mx.x / 2))
 	cam.position.y = clamp(cam.position.y, min(half.y - 60, mx.y / 2), max(mx.y - half.y, mx.y / 2))
 
@@ -178,6 +219,8 @@ func _unhandled_input(e: InputEvent) -> void:
 				_set_speed(20)
 			KEY_F:
 				follow = not follow
+			KEY_TAB:
+				_set_realm("wake" if realm == "dream" else "dream")
 			KEY_ESCAPE:
 				_select(null)
 
@@ -192,8 +235,31 @@ func _click(wp: Vector2) -> void:
 	var tp = wp / D.TS
 	var best = null
 	var bd = 1.2
+	if realm == "wake":
+		for p in w.pawns:
+			if p.alive and p.realm == "wake":
+				var d: float = p.wpos.distance_to(tp)
+				if d < bd:
+					bd = d
+					best = p
+		# a body asleep in the ward is that Sleeper too
+		for p in w.pawns:
+			if p.alive and p.realm == "dream" and p.ward_bed >= 0:
+				var b: Vector2i = w.wake.ward_beds[p.ward_bed]
+				var d: float = Vector2(b.x + 0.5, b.y + 0.5).distance_to(tp)
+				if d < bd:
+					bd = d
+					best = p
+		for c in w.wake.creatures:
+			if c.alive:
+				var d: float = c.pos.distance_to(tp)
+				if d < bd:
+					bd = d
+					best = c
+		_select(best)
+		return
 	for p in w.pawns:
-		if p.alive and p.away_until <= 0:
+		if p.alive and p.away_until <= 0 and p.realm == "dream":
 			var d: float = p.pos.distance_to(tp)
 			if d < bd:
 				bd = d
@@ -208,6 +274,7 @@ func _click(wp: Vector2) -> void:
 
 func _select(o) -> void:
 	view.selected = o
+	wview.selected = o
 	ui.show_inspect(o)
 	if o == null:
 		follow = false
@@ -230,6 +297,12 @@ func _simtest(days: int) -> void:
 					pw += p.power()
 					cs += p.core
 			print("  power %d need %d core %.2f arms %d" % [pw, w.guardian.dmg * w.guardian.hp, cs / max(1, w.pawns.size()), w.arms])
+			var wk = w.wake
+			var inw = 0
+			for p in w.pawns:
+				if p.alive and p.realm == "wake":
+					inw += 1
+			print("  waking: in city %d gates closed %d open %d civ deaths %d civs %d" % [inw, wk.gates_closed, wk.gates.filter(func(g): return not g.closed).size(), wk.civ_deaths, wk.civs.size()])
 			print("day %d pop %s wood %d stone %d raw %d meal %d shards %d bld %d bp %d raids %d deaths %d kills %d gate %s guard %d" % [w.day(), str(ranks), w.store.wood, w.store.stone, w.store.raw, w.store.meal, w.store.shards, w.buildings.size(), w.blueprints.size(), w.raids_survived, w.deaths, w.kills, str(w.gate_open), int(w.guardian.hp)])
 	for e in w.events:
 		print("  D%d %02d  [%s] %s" % [e.day + 1, int(e.hour), e.kind, e.text])
@@ -310,8 +383,73 @@ func _autoshot(dir: String) -> void:
 	cam.position = Vector2(w.camp) * D.TS
 	cam.zoom = Vector2(1.5, 1.5)
 	await _shot(dir, "07-walled-camp-at-night")
+	# 8. the waking world by day: the Academy and the Sleepers' ward
+	_run_until(func(): return w.hour() >= 13.0 and w.hour() < 14.0 and _in_city() >= 1, 200000)
+	_set_realm("wake")
+	cam.position = Vector2(w.wake.academy.get_center()) * D.TS
+	cam.zoom = Vector2(2.0, 2.0)
+	_set_speed(1)
+	await get_tree().create_timer(1.0).timeout
+	_set_speed(0)
+	await _shot(dir, "08-waking-world-academy")
+	# 9. a Gate in the streets
+	_run_until(func(): return _gate_fight() != null, 300000)
+	var gf = _gate_fight()
+	if gf != null:
+		cam.position = gf * D.TS
+		cam.zoom = Vector2(2.2, 2.2)
+		_set_speed(1)
+		await get_tree().create_timer(1.0).timeout
+		_set_speed(0)
+		await _shot(dir, "09-gate-in-the-streets")
+	# 10. the city at night
+	_run_until(func(): return w.hour() >= 22.0, 10000)
+	cam.position = Vector2(WK.W / 2, WK.H / 2) * D.TS
+	cam.zoom = Vector2(0.95, 0.95)
+	await _shot(dir, "10-city-at-night")
+	# 11. inspecting someone from the ward
+	var who = null
+	for p in w.pawns:
+		if p.alive and p.realm == "dream" and p.ward_bed >= 0:
+			who = p
+			break
+	if who != null:
+		_select(who)
+		var b: Vector2i = w.wake.ward_beds[who.ward_bed]
+		cam.position = Vector2(b) * D.TS + Vector2(100, 60)
+		cam.zoom = Vector2(2.8, 2.8)
+		await _shot(dir, "11-the-sleepers-ward")
+		_select(null)
 	print("autoshot done day ", w.day())
 	get_tree().quit()
+
+func _in_city() -> int:
+	var n = 0
+	for p in w.pawns:
+		if p.alive and p.realm == "wake":
+			n += 1
+	return n
+
+func _gate_fight():
+	## Where a Gate has spilled creatures and someone is close by, or null.
+	for g in w.wake.gates:
+		if g.closed or not g.spawned:
+			continue
+		var alive = 0
+		var mid = Vector2()
+		for c in g.spawn:
+			if c.alive:
+				alive += 1
+				mid += c.pos
+		if alive >= 2:
+			mid /= alive
+			for v in w.wake.civs:
+				if v.alive and v.pos.distance_to(mid) < 6:
+					return mid
+			for p in w.pawns:
+				if p.alive and p.realm == "wake" and p.wpos.distance_to(mid) < 6:
+					return mid
+	return null
 
 func _raider_near(r: float) -> bool:
 	for c in w.creatures:
